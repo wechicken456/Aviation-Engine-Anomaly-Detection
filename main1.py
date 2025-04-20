@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[55]:
+# In[104]:
 
 
 import pandas as pd
@@ -22,7 +22,7 @@ torch.manual_seed(0)
 plt.tight_layout()
 
 
-# In[4]:
+# In[105]:
 
 
 #plt.rcParams["figure.figsize"] = (45,35)
@@ -65,7 +65,7 @@ for i in range(1, 4):
 (dfs["is_fail"] == 1).sum()
 
 
-# In[143]:
+# In[103]:
 
 
 class DataModule(d2l.HyperParameters):
@@ -140,8 +140,11 @@ class PlaneData(DataModule):
         # sort each flight by time, then truncate to multiple of num_steps, then scale it separately from other flights
         # Then combine it into the training/val sets
         for fid in normal_flight_ids:
+            if 1 in flight["label"].values:
+                raise "NUH UH"
+                
             flight = flight_groups.get_group(fid).sort_values(by="time", kind="stable")
-            flight = flight.drop(["flight_id", "label", "is_fail"], axis=1)
+            flight = flight.drop(["flight_id", "is_fail", "time"], axis=1)
             flight = flight.iloc[:len(flight) - (len(flight) % self.num_steps)]
             
             self.label_names = flight.columns.tolist()
@@ -188,7 +191,7 @@ class PlaneData(DataModule):
             flight = flight_groups.get_group(fid).sort_values(by="time", kind="stable")
             flight = flight.iloc[:len(flight) - (len(flight) % self.num_steps)]
             labels = flight["is_fail"].values # this line is different from the first loop
-            flight = flight.drop(["flight_id", "label", "is_fail"], axis=1)
+            flight = flight.drop(["flight_id", "is_fail", "time"], axis=1)
 
             self.label_names = flight.columns.tolist()
             #scaler = StandardScaler()
@@ -213,7 +216,7 @@ class PlaneData(DataModule):
             flight = flight_groups.get_group(fid).sort_values(by="time", kind="stable")
             flight = flight.iloc[:len(flight) - (len(flight) % self.num_steps)]
             labels = flight["is_fail"].values # this line is different from the first loop
-            flight = flight.drop(["flight_id", "label", "is_fail"], axis=1)
+            flight = flight.drop(["flight_id", "is_fail", "time"], axis=1)
 
             self.label_names = flight.columns.tolist()
             #scaler = StandardScaler()
@@ -509,7 +512,7 @@ class Trainer(d2l.Trainer):
             # Didn't use the self.model.loss function here as it will use a mean reduction over all features. 
             errors = (Y_hat - Y) ** 2
             max_errors = errors.max(dim=1)[0] # for each batch, get the error of the feature that produces the greatest error
-            max_errors_list.append(max_errors.detach().numpy())
+            max_errors_list.append(max_errors.detach().cpu().numpy())
             labels_list.append(labels.cpu().numpy())
 
         thresh_max_errors = np.concatenate(max_errors_list)
@@ -553,7 +556,7 @@ class Trainer(d2l.Trainer):
             # Didn't use the self.model.loss function here as it will use a mean reduction over all features. 
             errors = (Y_hat - Y) ** 2
             max_errors = errors.max(dim=1)[0] # for each batch, get the error of the feature that produces the greatest error
-            max_errors_list.append(max_errors.detach().numpy())
+            max_errors_list.append(max_errors.detach().cpu().numpy())
             labels_list.append(labels.cpu().numpy())
             
         test_max_errors = np.concatenate(max_errors_list)
@@ -596,7 +599,7 @@ class Trainer(d2l.Trainer):
         plt.title("Metrics vs. Threshold on Test Set")
         plt.legend()
         plt.grid(True)
-        plt.savefig("metrics_vs_threshold.png")
+        plt.savefig("./metrics/metrics_vs_threshold.png")
         plt.close()
 
         # Precision-Recall Curve
@@ -610,7 +613,7 @@ class Trainer(d2l.Trainer):
         plt.title("Precision-Recall Curve (Test Set)")
         plt.legend()
         plt.grid(True)
-        plt.savefig("precision_recall_curve_test.png")
+        plt.savefig("./metrics/precision_recall_curve_test.png")
         plt.close()
             
 
@@ -629,12 +632,12 @@ data = PlaneData(dfs, trunc_num=-1, num_steps=num_steps, is_test=False)
 num_features = data.train_X.shape[2] 
 num_hiddens, num_hiddens_ffn, num_blks, num_hiddens_latent = 128, 128, 4, 64
 num_lstm_layers = 2
-num_heads, dropout, bias, lr = 4, 0.2, True, 1e-3
+num_heads, dropout, bias, lr = 4, 0.2, True, 1e-2
 rnn = RNN(num_features, num_hiddens, num_hiddens_ffn, num_hiddens_latent, 
              num_lstm_layers, dropout, bias, lr)
 model = MainModel(rnn, num_features, lr)
 
-trainer = Trainer(max_epochs=10, num_gpus=2)
+trainer = Trainer(max_epochs=70, num_gpus=2)
 trainer.fit(model, data)
 
 
@@ -685,7 +688,6 @@ count_parameters(model)
 # In[30]:
 
 
-plt.savefig("./losses.png")
 with open("./losses.txt", "w") as f:
     f.write(", ".join([str(i) for i in trainer.train_losses]))
     f.write("\n")
@@ -731,24 +733,10 @@ p, r, t = precision_recall_curve([0, 1, 0, 1, 0, 0, 0, 1], [0.02, 0.08, 0.02, 0.
 p, r, t
 
 
-# In[65]:
+# In[102]:
 
 
-f1s = 2*(p*r) / (p + r + 1e-9)
-f1s
 
-
-# In[66]:
-
-
-np.argmax(np.array(f1s))
-
-
-# In[91]:
-
-
-fn = nn.HuberLoss()
-fn(torch.tensor([1,2,3], dtype=torch.float32), torch.tensor([4,5,6], dtype=torch.float32))
 
 
 # In[ ]:
