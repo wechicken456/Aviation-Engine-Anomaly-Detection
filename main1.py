@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[104]:
+# In[ ]:
 
 
 import pandas as pd
@@ -17,55 +17,73 @@ from pandas.api.types import is_numeric_dtype
 import time
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import precision_recall_curve
+import argparse
+import random
 
 torch.manual_seed(0)
+plt.rcParams["figure.figsize"] = (40,30)
 plt.tight_layout()
 
-
-# In[105]:
-
-
-#plt.rcParams["figure.figsize"] = (45,35)
-
-
-# In[5]:
+parser = argparse.ArgumentParser()
+parser.add_argument("--cuda_start_idx", type=int, help="starting index for cuda device", default=0)
+args = parser.parse_args()
+print(args.cuda_start_idx)
 
 
-dfs = pd.DataFrame()
-for i in range(1, 6):
-    df = pd.read_excel(f"./data/flight_data_batch{i}.xlsx")
-    df.insert(len(df.columns.tolist()), "is_fail", 0)
-    fail_df = pd.read_csv(f"./data/Failures/Failure_Events_in_Batch_{i}.csv")
+# In[ ]:
+
+
+print(f"num_gpus: {d2l.num_gpus()}")
+device = torch.device(f"cuda:{args.cuda_start_idx}")
+print(f"Using this GPU device: {device}")
+t = torch.tensor([1,2,3]).to(device)
+print(f"Test tensor with this device: {t}")
+
+
+# In[15]:
+
+
+plt.rcParams["figure.figsize"] = (45,35)
+
+
+# In[16]:
+
+
+# dfs = pd.DataFrame()
+# for i in range(1, 6):
+#     df = pd.read_excel(f"./data/flight_data_batch{i}.xlsx")
+#     df.insert(len(df.columns.tolist()), "is_fail", 0)
+#     fail_df = pd.read_csv(f"./data/Failures/Failure_Events_in_Batch_{i}.csv")
     
-    fails = set(zip(fail_df["flight_id"], fail_df["failure_time"]))
-    df.loc[df.apply(lambda row: (row["flight_id"], row["time"]) in fails, axis=1), "is_fail"] = 1
+#     fails = set(zip(fail_df["flight_id"], fail_df["failure_time"]))
+#     df.loc[df.apply(lambda row: (row["flight_id"], row["time"]) in fails, axis=1), "is_fail"] = 1
 
-    dfs = pd.concat([dfs, df], ignore_index=True)
-
-
-# In[6]:
+#     dfs = pd.concat([dfs, df], ignore_index=True)
 
 
-for i in range(1, 4):
-    df = pd.read_excel(f"./data/flight_data_batch6_part{i}.xlsx")
+# In[17]:
+
+
+# for i in range(1, 4):
+#     df = pd.read_excel(f"./data/flight_data_batch6_part{i}.xlsx")
     
-    df.insert(len(df.columns.tolist()), "is_fail", 0)
-    fail_df = pd.read_csv(f"./data/Failures/Failure_Events_in_Batch_6_Part_{i}.csv")
+#     df.insert(len(df.columns.tolist()), "is_fail", 0)
+#     fail_df = pd.read_csv(f"./data/Failures/Failure_Events_in_Batch_6_Part_{i}.csv")
     
-    fails = set(zip(fail_df["flight_id"], fail_df["failure_time"]))
-    df.loc[df.apply(lambda row: (row["flight_id"], row["time"]) in fails, axis=1), "is_fail"] = 1
+#     fails = set(zip(fail_df["flight_id"], fail_df["failure_time"]))
+#     df.loc[df.apply(lambda row: (row["flight_id"], row["time"]) in fails, axis=1), "is_fail"] = 1
     
-    dfs = pd.concat([dfs, df], ignore_index=True)    
-    #dfs = pd.concat([dfs, df], ignore_index=False)
+#     dfs = pd.concat([dfs, df], ignore_index=True)    
+#     #dfs = pd.concat([dfs, df], ignore_index=False)
 
 
-# In[7]:
+# In[34]:
 
 
-(dfs["is_fail"] == 1).sum()
+dfs = pd.read_csv(f"./data/combined_correct_datasets.csv")
 
 
-# In[103]:
+# In[2]:
 
 
 class DataModule(d2l.HyperParameters):
@@ -86,10 +104,10 @@ class DataModule(d2l.HyperParameters):
         return self.get_tensorloader([self.val_X, self.val_Y], is_train=False)
         
     def thresh_dataloader(self):
-        return self.get_tensorloader([self.thresh_X, self.thresh_Y, self.thresh_labels], is_train=False)
+        return self.get_tensorloader([self.thresh_X, self.thresh_Y, self.thresh_labels, self.thresh_times], is_train=False)
         
     def test_dataloader(self):
-        return self.get_tensorloader([self.test_X, self.test_Y, self.test_labels], is_train=False)
+        return self.get_tensorloader([self.test_X, self.test_Y, self.test_labels, self.test_times], is_train=False)
 
 
     def get_tensorloader(self, tensors, is_train, indices=slice(0, None)):
@@ -100,7 +118,7 @@ class DataModule(d2l.HyperParameters):
 
 class PlaneData(DataModule):
     def __init__(self, data_frame, trunc_num = 5000, batch_size=64, 
-                 num_steps = 50, train_val_ratio = 0.8, thresh_test_ratio = 0.5, is_test = False):
+                 num_steps = 50, train_val_ratio = 0.8, thresh_test_ratio = 0.3, is_test = False):
         """
         So the normal flights (without anomalies. label = 0) will be the training dataset
         Each normal flight is splitted into regression training and regression validation using `train__val_ratio`
@@ -117,21 +135,62 @@ class PlaneData(DataModule):
         all_data = data_frame.iloc[:trunc_num]
 
         start = time.time()
-        flight_groups = all_data.groupby("flight_id") 
-        flight_ids = list(flight_groups.groups.keys())
+        groups = all_data.groupby("label") 
 
-        normal_flight_ids = [fid for fid in flight_ids if flight_groups.get_group(fid)["label"].iloc[0] == 0]
-        bad_flight_ids = [fid for fid in flight_ids if flight_groups.get_group(fid)["label"].iloc[0] == 1]
-        num_thresh_flights = int(len(bad_flight_ids) * thresh_test_ratio)
-        thresh_flight_ids = bad_flight_ids[:num_thresh_flights]
-        test_flight_ids = bad_flight_ids[num_thresh_flights:]
+        normal_flights = groups.get_group(0).groupby("flight_id")
+        normal_flights = [flight for _, flight in normal_flights]
+        
+        bad_flights = groups.get_group(1).groupby("flight_id")
+        bad_flights = [flight for _, flight in bad_flights]
 
+        # Select 50 normal flights to move to test set and 50 bad flights to move to training set
+        random_indices_normal = random.sample(range(len(normal_flights)), 50)  # Indices of normal flights to move to test
+        random_indices_bad = random.sample(range(len(bad_flights)), 30)       # Indices of bad flights to move to training
+        
+        # Sort indices in descending order to avoid index shifting when popping
+        random_indices_normal.sort(reverse=True)
+        random_indices_bad.sort(reverse=True)
+
+        bad_in_normal, normal_in_bad = [], []
+        for i in random_indices_normal:
+            normal_in_bad.append(normal_flights.pop(i)) # pop then add
+        for i in random_indices_bad:
+            bad_in_normal.append(bad_flights.pop(i)) # pop then add
+
+        normal_flights = normal_flights + bad_in_normal
+        bad_flights = bad_flights + normal_in_bad
+
+        random.shuffle(normal_flights)
+        random.shuffle(bad_flights)
+            
+        # idx = random.randint(0, len(bad_flights) - 1)
+        # normal_flights.append(bad_flights[idx])
+        # bad_flights.pop(idx)
+
+        num_thresh_flights = int(len(bad_flights)* thresh_test_ratio)
+
+        print(f"# normal flights: {len(normal_flights)}")
+        print(f"# bad flights: {len(bad_flights)}")
+        print(f"# thresh flights: {num_thresh_flights}")
+        print(f"# test flights: {len(bad_flights) - num_thresh_flights}")
+        
+        #all_flights = pd.concat(normal_flights)
+        all_flights = pd.concat(normal_flights)
+        all_flights = all_flights.drop(["time", "flight_id", "label", "is_fail", "rpm_left", "rpm_right"], axis=1)
+        
+        scaler = StandardScaler()
+        scaler.fit(all_flights)
+        # print("[+] Scaler's information: ")
+        # print("Min: ", scaler.data_min_)
+        # print("Max: ", scaler.data_max_)
+        self.scaler = scaler
+        
         self.train_X = []
         self.val_X = []
         self.train_Y = []
         self.val_Y = []
-        self.thresh_X, self.thresh_Y, self.thresh_labels = [], [], []
-        self.test_X, self.test_Y, self.test_labels = [], [], []
+        self.thresh_X, self.thresh_Y, self.thresh_labels, self.thresh_times = [], [], [], []
+        self.test_X, self.test_Y, self.test_labels, self.test_times = [], [], [], []
         self.num_train = 0
         self.num_val = 0
         self.num_thresh = 0
@@ -139,18 +198,13 @@ class PlaneData(DataModule):
 
         # sort each flight by time, then truncate to multiple of num_steps, then scale it separately from other flights
         # Then combine it into the training/val sets
-        for fid in normal_flight_ids:
-            if 1 in flight["label"].values:
-                raise "NUH UH"
+        for flight in normal_flights:
+            flight = flight.sort_values(by="time", kind="stable")
                 
-            flight = flight_groups.get_group(fid).sort_values(by="time", kind="stable")
-            flight = flight.drop(["flight_id", "is_fail", "time"], axis=1)
+            flight = flight.drop(["time", "flight_id", "label", "is_fail", "rpm_left", "rpm_right"], axis=1)
             flight = flight.iloc[:len(flight) - (len(flight) % self.num_steps)]
             
             self.label_names = flight.columns.tolist()
-            #scaler = StandardScaler()
-            scaler = MinMaxScaler()
-            scaler.fit(flight)
 
             scaled = scaler.transform(flight) # scale 
             scaled_tensor = torch.tensor(scaled, dtype=torch.float32)
@@ -187,62 +241,96 @@ class PlaneData(DataModule):
         print("val_Y's shape: ", self.val_Y.shape)
 
         # Same thing as the above loop, with `thresh_flight_ids` instead
-        for fid in thresh_flight_ids:
-            flight = flight_groups.get_group(fid).sort_values(by="time", kind="stable")
+        self.bad_flight_ids = []
+        for i in range(num_thresh_flights):
+            flight = bad_flights[i].sort_values(by="time", kind="stable")
             flight = flight.iloc[:len(flight) - (len(flight) % self.num_steps)]
             labels = flight["is_fail"].values # this line is different from the first loop
-            flight = flight.drop(["flight_id", "is_fail", "time"], axis=1)
+            times = flight["time"].values # this line is different from the first loop
+            
+            flight_ids = flight["flight_id"].values
+
+            
+            if flight_ids[0] == "45FOELI6":
+                self.bruh = flight
+                self.bruh_times = times
+                self.bruh_labels = labels
+                
+            flight = flight.drop(["time", "flight_id", "label", "is_fail", "rpm_left", "rpm_right"], axis=1)
 
             self.label_names = flight.columns.tolist()
-            #scaler = StandardScaler()
-            scaler = MinMaxScaler()
-            scaler.fit(flight)
-
+            
             scaled = scaler.transform(flight) # scale 
             scaled_tensor = torch.tensor(scaled, dtype=torch.float32)
             labels_tensor = torch.tensor(labels, dtype=torch.float32)
+            times_tensor = torch.tensor(times, dtype=torch.float32)
 
+            if flight_ids[0] == "45FOELI6":
+                self.bruh_scaled = scaled
+            
             # Create input-output pairs
-            X_seqs, Y_seqs, labels = self.create_sequences(scaled_tensor, labels_tensor)
-            for i in range(1, X_seqs.shape[0]):
-                assert(X_seqs[i][-1].equal(Y_seqs[i-1]))
+            X_seqs, Y_seqs, labels, times = self.create_sequences(scaled_tensor, labels_tensor, times_tensor)
+            for j in range(1, X_seqs.shape[0]):
+                assert(X_seqs[j][-1].equal(Y_seqs[j-1]))
             
             self.thresh_X.append(X_seqs)
             self.thresh_Y.append(Y_seqs)
+            self.thresh_times.append(times)
             self.thresh_labels.append(labels)
+            # fail_idx = (labels == 1).nonzero(as_tuple=True)[0]
+            # self.thresh_X.append(X_seqs[fail_idx])
+            # self.thresh_Y.append(Y_seqs[fail_idx])
+            # self.thresh_times.append(times[fail_idx])
+            # self.thresh_labels.append(labels[fail_idx])
 
+            flight_ids = flight_ids[self.num_steps:]
+            self.bad_flight_ids.append(flight_ids[0])
+
+
+        self.test_flight_ids = []
          # Same thing as the above loop, with `test_flight_ids` instead
-        for fid in thresh_flight_ids:
-            flight = flight_groups.get_group(fid).sort_values(by="time", kind="stable")
+        for i in range(num_thresh_flights, len(bad_flights)):
+            flight = bad_flights[i].sort_values(by="time", kind="stable")
             flight = flight.iloc[:len(flight) - (len(flight) % self.num_steps)]
             labels = flight["is_fail"].values # this line is different from the first loop
-            flight = flight.drop(["flight_id", "is_fail", "time"], axis=1)
+            times = flight["time"].values # this line is different from the first loop
+            flight_ids = flight["flight_id"].values
+            flight = flight.drop(["time", "flight_id", "label", "is_fail", "rpm_left", "rpm_right"], axis=1)
+
 
             self.label_names = flight.columns.tolist()
-            #scaler = StandardScaler()
-            scaler = MinMaxScaler()
-            scaler.fit(flight)
 
             scaled = scaler.transform(flight) # scale 
             scaled_tensor = torch.tensor(scaled, dtype=torch.float32)
             labels_tensor = torch.tensor(labels, dtype=torch.float32)
+            times_tensor = torch.tensor(times, dtype=torch.float32)
 
             # Create input-output pairs
-            X_seqs, Y_seqs, labels = self.create_sequences(scaled_tensor, labels_tensor)
-            for i in range(1, X_seqs.shape[0]):
-                assert(X_seqs[i][-1].equal(Y_seqs[i-1]))
+            X_seqs, Y_seqs, labels, times = self.create_sequences(scaled_tensor, labels_tensor, times_tensor)
+            for j in range(1, X_seqs.shape[0]):
+                assert(X_seqs[j][-1].equal(Y_seqs[j-1]))
             
             self.test_X.append(X_seqs)
             self.test_Y.append(Y_seqs)
+            self.test_times.append(times)
             self.test_labels.append(labels)
+            self.test_flight_ids += list(flight_ids[self.num_steps:])
+            # fail_idx = (labels == 1).nonzero(as_tuple=True)[0]
+            # self.test_X.append(X_seqs[fail_idx])
+            # self.test_Y.append(Y_seqs[fail_idx])
+            # self.test_times.append(times[fail_idx])
+            # self.test_labels.append(labels[fail_idx])
             
+        
         # After processing all flights, concatenate along the batch dimension
         self.thresh_X = torch.cat(self.thresh_X, dim=0)  # (total_sequences, num_steps - 1, num_features)
         self.thresh_Y = torch.cat(self.thresh_Y, dim=0)  # (total_sequences, num_features)
         self.thresh_labels = torch.cat(self.thresh_labels, dim=0) # (total_sequences, 1)
+        self.thresh_times = torch.cat(self.thresh_times, dim=0)
         self.test_X = torch.cat(self.test_X, dim=0)  # (total_sequences, num_steps - 1, num_features)
         self.test_Y = torch.cat(self.test_Y, dim=0)  # (total_sequences, num_features)
         self.test_labels = torch.cat(self.test_labels, dim=0) # (total_sequences, 1)
+        self.test_times = torch.cat(self.test_times, dim=0)
 
         # shape of X: (number of sequences, num_steps, # of features of the raw data) 
         # last dim is the number of different features (e.g. pitch, roll, etc) that each data point has
@@ -256,7 +344,7 @@ class PlaneData(DataModule):
         end = time.time()
         print(f"Processing Time: {end - start}")
 
-    def create_sequences(self, flight: torch.Tensor, labels: torch.Tensor = None):
+    def create_sequences(self, flight: torch.Tensor, labels: torch.Tensor = None, times: torch.Tensor = None):
         """
         Create input-output sequences from a single flight tensor.
         
@@ -279,20 +367,10 @@ class PlaneData(DataModule):
         if labels is None:
             return X, Y
         else:
-            return X, Y, labels[self.num_steps:]
-        
-
-        # broadcast then add. Shape of X_indices: (num_seqs, num_steps)
-        
-    # def get_dataloader(self, X, Y, is_train=False):
-    #     if is_train:
-    #         return self.get_tensorloader([self.train_X, self.train_Y], is_train, slice(0, None))
-    #     else:
-    #         return self.get_tensorloader([self.val_X, self.val_Y], is_train, slice(0, None))
+            return X, Y, labels[self.num_steps:], times[self.num_steps:]
 
 
-
-# In[144]:
+# In[42]:
 
 
 class PositionalEncoding(nn.Module):
@@ -353,7 +431,7 @@ class Transformer(nn.Module):
     
 
 
-# In[145]:
+# In[43]:
 
 
 def init_normal(module):
@@ -368,21 +446,20 @@ class RNN(d2l.Module):
         
         super().__init__()
         self.save_hyperparameters()
-        self.rnn = nn.LSTM(num_features, num_hiddens, num_layers = 2, batch_first = True)
+        self.rnn = nn.LSTM(num_features, num_hiddens, num_layers = 2, batch_first = True, bias = True)
 
     def init_weights(self):
         self.apply(init_normal)
 
     def forward(self, X, H_C = None):
-        output, H_C = self.rnn(X, H_C)
-        return output, H_C
+        return self.rnn(X, H_C)
 
 
-# In[146]:
+# In[44]:
 
 
 class MainModel(d2l.Module):
-    def __init__(self, rnn, num_features, threshold = 0.1, lr = 0.1, wd = 1e-5):
+    def __init__(self, rnn, num_features, num_hiddens, dropout = 0.2, lr = 0.1, wd = 1e-5):
         """
         num_features: how many features are there? Is the last dim of a batch: (batch_size, num_steps, num_inputs) 
         num_hiddens: dim for each variable (e.g. torque, yaw, etc)
@@ -396,7 +473,9 @@ class MainModel(d2l.Module):
         self.rnn = rnn
         self.rnn.init_weights()
         #self.dense1 = nn.LazyLinear(int(rnn.num_hiddens / 2))
-        self.dense2 = nn.LazyLinear(num_features)
+        #self.embed = nn.LazyLinear(num_hiddens)
+        self.dropout = nn.Dropout(dropout)
+        self.dense = nn.LazyLinear(num_features)
         self.init_weights()
         self.train_loss, self.val_loss = [], []
 
@@ -410,13 +489,11 @@ class MainModel(d2l.Module):
         Check my notebook in Notion for a visualization of this
         output's shape: [batch size, num steps, hidden size)
         H's output: [batch size, hidden size]
-        both output[:, -1, :] and h_n[-1, :, :] give (batch, hidden_size)
+        both output[:, -1, :] and h_n[-1, 
+trainer = Trainer(max_epochs=50, num_gpus=1):, :] give (batch, hidden_size)
         """
         _, (H, _) = self.rnn(X)
-        output = self.dense2(H[-1])
-        #output = self.dense2(self.dense1(H[-1])) # we have 2 LSTM layers, take the last one
-        #print(output.shape)
-        return output
+        return self.dense(self.dropout(H[-1]))
 
     def loss(self, Y_hat, Y):
         # right now Y_hat is the output of the dense after the RNN with dim (batch_size, 1, num_features)
@@ -425,24 +502,22 @@ class MainModel(d2l.Module):
         return fn(Y_hat, Y)
         
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.wd)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.wd)
+        return optimizer
 
     def training_step(self, batch):
-        Y_hat = self(*batch[:-1])
-        Y = batch[-1]
-        l = self.loss(Y_hat, Y)        
+        l = self.loss(self(*batch[:-1]), batch[-1])        
         self.plot('loss', l, train=True)
         return l
         
     def validation_step(self, batch):
-        Y_hat = self(*batch[:-1])
-        Y = batch[-1]
-        l = self.loss(Y_hat, Y) 
+        #print(len(batch), batch[0].shape, batch[-1].shape)
+        l = self.loss(self(*batch[:-1]), batch[-1])        
         self.plot('loss', l, train=False)
         return l
 
 
-# In[147]:
+# In[45]:
 
 
 class Trainer(d2l.Trainer):
@@ -451,7 +526,7 @@ class Trainer(d2l.Trainer):
         super().__init__(max_epochs)
         self.train_losses = []
         self.val_losses = []
-        self.gpus = [d2l.gpu(i) for i in range(min(num_gpus, d2l.num_gpus()))]
+        self.gpus = [d2l.gpu(args.cuda_start_idx + i) for i in range(min(num_gpus, d2l.num_gpus()))]
 
     def prepare_data(self, data):
         self.train_dataloader = data.train_dataloader()
@@ -466,14 +541,14 @@ class Trainer(d2l.Trainer):
         self.prepare_data(data)
         self.prepare_model(model)
         self.optim = model.configure_optimizers()
-        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optim, milestones=[5, 15, 30],gamma = 0.1)
+        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optim, milestones=[5, 15, 30],gamma = 0.2)
         self.epoch = 0
         self.train_batch_idx = 0
         self.val_batch_idx = 0
         for self.epoch in range(self.max_epochs):
             self.fit_epoch()
             self.scheduler.step()
-            plt.savefig("./losses.png")
+            plt.savefig("./losses1_StandardScaler.png")
             
         self.find_best_threshold()
         self.evaluate_thresholds()      
@@ -504,34 +579,40 @@ class Trainer(d2l.Trainer):
     def find_best_threshold(self):
         self.model.eval()
         
-        max_errors_list, labels_list = [], []
+        errors_list, labels_list = [], []
         for batch in self.thresh_dataloader:
-            X, Y, labels = self.prepare_batch(batch)
+            X, Y, labels, _ = self.prepare_batch(batch)
             Y_hat = self.model(X)
             # shape of errors: (batch_size, num_features). 
-            # Didn't use the self.model.loss function here as it will use a mean reduction over all features. 
+            # Didn't use the self.model.loss function here as it will use a mean reduction over all batches. 
             errors = (Y_hat - Y) ** 2
-            max_errors = errors.max(dim=1)[0] # for each batch, get the error of the feature that produces the greatest error
-            max_errors_list.append(max_errors.detach().cpu().numpy())
+            errors = errors.mean(dim=1) # get the mean error of all feature
+            errors_list.append(errors.detach().cpu().numpy())
             labels_list.append(labels.cpu().numpy())
 
-        thresh_max_errors = np.concatenate(max_errors_list)
+        self.errors_list = errors_list
+        self.labels_list = labels_list
+        thresh_errors = np.concatenate(errors_list)
         thresh_labels = np.concatenate(labels_list)
-        precision, recall, self.thresholds = precision_recall_curve(thresh_labels, thresh_max_errors, pos_label=1)
+        precision, recall, self.thresholds = precision_recall_curve(thresh_labels, thresh_errors, pos_label=1)
         f1_scores = 2*(precision*recall) / (precision + recall + 1e-9)
         best_threshold_idx = np.argmax(f1_scores)
         best_threshold = self.thresholds[best_threshold_idx]
         best_f1 = f1_scores[best_threshold_idx]
 
-        self.best_val_threshold_idx = best_threshold_idx
+        self.best_threshold_idx = best_threshold_idx
         self.best_threshold = best_threshold
         self.best_val_f1 = best_f1
 
-        anomalies = thresh_max_errors > best_threshold
+        anomalies = thresh_errors > best_threshold
         tp = np.sum(anomalies & (thresh_labels == 1))
         fp = np.sum(anomalies & (thresh_labels == 0))
         tn = np.sum(~anomalies & (thresh_labels == 0))
         fn = np.sum(~anomalies & (thresh_labels == 1))
+
+        print("Thresholding set's best threshold's metrics:")
+        print(tp, fp, tn, fn)
+        
         prec = tp / (tp + fp) if tp + fp > 0 else 0
         rec = tp / (tp + fn) if tp + fn > 0 else 0
         acc = (tp + tn) / (tp + tn + fp + fn) if tp + tn + fp + fn > 0 else 0
@@ -548,25 +629,31 @@ class Trainer(d2l.Trainer):
             raise "Please run find_best_threshold() first!"
         
         self.model.eval()
-        max_errors_list, labels_list = [], []
+        errors_list, labels_list = [], []
         for batch in self.test_dataloader:
-            X, Y, labels = self.prepare_batch(batch)
+            X, Y, labels, _ = self.prepare_batch(batch)
             Y_hat = self.model(X)
             # shape of errors: (batch_size, num_features). 
-            # Didn't use the self.model.loss function here as it will use a mean reduction over all features. 
+            # Didn't use the self.model.loss function here as it will use a mean reduction over all batch samples. 
             errors = (Y_hat - Y) ** 2
-            max_errors = errors.max(dim=1)[0] # for each batch, get the error of the feature that produces the greatest error
-            max_errors_list.append(max_errors.detach().cpu().numpy())
+            # print(errors)
+            errors = errors.mean(dim=1) # get the mean error of all feature
+            # print(errors)
+            # print(labels)
+            # break
+            errors_list.append(errors.detach().cpu().numpy())
             labels_list.append(labels.cpu().numpy())
             
-        test_max_errors = np.concatenate(max_errors_list)
+        test_errors = np.concatenate(errors_list)
         test_labels = np.concatenate(labels_list)
+        self.test_errors = test_errors
+        self.test_labels = test_labels
         test_precision = []
         test_recall = []
         test_f1 = []
         test_accuracy = []
         for thresh in self.thresholds:
-            anomalies = test_max_errors > thresh
+            anomalies = test_errors > thresh
             tp = np.sum(anomalies & (test_labels == 1))
             fp = np.sum(anomalies & (test_labels == 0))
             tn = np.sum(~anomalies & (test_labels == 0))
@@ -593,35 +680,37 @@ class Trainer(d2l.Trainer):
         plt.plot(self.thresholds, test_recall, label="Recall", marker='.')
         plt.plot(self.thresholds, test_f1, label="F1 Score", marker='.')
         plt.plot(self.thresholds, test_accuracy, label="Accuracy", marker='.')
-        plt.axvline(x=self.best_threshold, color='red', linestyle='--', label=f"Optimal Threshold ({self.best_threshold:.6f})")
+        plt.axvline(x=self.best_threshold, color='red', linestyle='--', label=f"Optimal Threshold from Thresholding Set({self.best_threshold:.6f})")
+        plt.axvline(x=best_test_threshold, color='orange', linestyle='--', label=f"Optimal Threshold from Test Set({best_test_threshold:.6f})")
         plt.xlabel("Threshold")
         plt.ylabel("Metric Value")
         plt.title("Metrics vs. Threshold on Test Set")
         plt.legend()
         plt.grid(True)
-        plt.savefig("./metrics/metrics_vs_threshold.png")
+        plt.savefig("./metrics/metrics_vs_threshold_without_labels_MSE_StandardScaler_256.png")
         plt.close()
 
         # Precision-Recall Curve
-        test_precision, test_recall, _ = precision_recall_curve(test_labels, test_max_errors, pos_label=1)
+        prc_test_precision, prc_test_recall, _ = precision_recall_curve(test_labels, test_errors, pos_label=1)
         plt.figure(figsize=(8, 6))
-        plt.plot(test_recall, test_precision, label="Precision-Recall Curve")
-        plt.scatter(test_recall[best_test_idx], test_precision[best_test_idx], color='red',
-                    label=f"Best Threshold ({best_test_threshold:.6f})")
+        plt.plot(prc_test_recall, prc_test_precision, label="Precision-Recall Curve")
+        plt.scatter(test_recall[best_test_idx], test_precision[best_test_idx], color='orange',
+                    label=f"Best Threshold from Test Set({best_test_threshold:.6f})")
+        plt.scatter(test_recall[self.best_threshold_idx], test_precision[self.best_threshold_idx], color='red',
+                    label=f"Best Threshold from Thresholding Set({self.best_threshold:.6f})")
         plt.xlabel("Recall")
         plt.ylabel("Precision")
         plt.title("Precision-Recall Curve (Test Set)")
         plt.legend()
         plt.grid(True)
-        plt.savefig("./metrics/precision_recall_curve_test.png")
+        plt.savefig("./metrics/precision_recall_curve_test_without_labels_MSE_StandardScaler_256.png")
         plt.close()
-            
 
 
-# In[148]:
+# In[46]:
 
 
-num_steps = 50
+num_steps = 30
 data = PlaneData(dfs, trunc_num=-1, num_steps=num_steps, is_test=False)
 #print(data.Y.shape)
 
@@ -629,16 +718,156 @@ data = PlaneData(dfs, trunc_num=-1, num_steps=num_steps, is_test=False)
 # In[ ]:
 
 
+pairs = zip(data.thresh_labels, data.thresh_times)
+bad_points = list(filter(lambda p: p[0] == 1, pairs))
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[742]:
+
+
+# num_graphs = data.train_X.shape[2]
+# col_names = data.label_names
+# dd = torch.transpose(data.train_X[2139], 0, 1)
+# t = [i for i in range(dd.shape[1])]
+# for i in range(num_graphs):
+#     fig, ax = plt.subplots(1, figsize=(10, 5))
+
+#     ax.set_ylabel(col_names[i])
+#     ax.plot(t, dd[i])
+
+
+# In[ ]:
+
+
 num_features = data.train_X.shape[2] 
-num_hiddens, num_hiddens_ffn, num_blks, num_hiddens_latent = 128, 128, 4, 64
+num_hiddens, num_hiddens_ffn, num_blks, num_hiddens_latent = 256, 128, 4, 64
 num_lstm_layers = 2
 num_heads, dropout, bias, lr = 4, 0.2, True, 1e-2
 rnn = RNN(num_features, num_hiddens, num_hiddens_ffn, num_hiddens_latent, 
              num_lstm_layers, dropout, bias, lr)
-model = MainModel(rnn, num_features, lr)
+model = MainModel(rnn, num_features, num_hiddens, lr)
 
-trainer = Trainer(max_epochs=70, num_gpus=2)
+trainer = Trainer(max_epochs=100, num_gpus=8)
 trainer.fit(model, data)
+torch.save(model.state_dict(), 'model_weights_without_labels_MSE1.pth')
+
+
+# In[10]:
+
+
+# num_features = data.train_X.shape[2] 
+# num_hiddens, num_hiddens_ffn, num_blks, num_hiddens_latent = 256, 128, 4, 64
+# num_lstm_layers = 2
+# num_heads, dropout, bias, lr = 4, 0.2, True, 1e-2
+# rnn = RNN(num_features, num_hiddens, num_hiddens_ffn, num_hiddens_latent, 
+#              num_lstm_layers, dropout, bias, lr)
+# model = MainModel(rnn, num_features, lr)
+# model.load_state_dict(torch.load('model_weights_without_labels_MSE.pth', weights_only=True,  map_location=torch.device('cpu')))
+# trainer = Trainer(max_epochs=150, num_gpus=8)
+# trainer.prepare_data(data)
+# trainer.prepare_model(model)
+# trainer.find_best_threshold()
+# trainer.evaluate_thresholds()  
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[809]:
+
+
+# # tmp = data.bruh[100:2000]
+# tmp = dfs[dfs["flight_id"] == "HPEGXM74"]
+# t = len(tmp)
+# times = tmp["time"].values
+# tmp = tmp.drop(["time", "flight_id", "label", "is_fail", "rpm_left", "rpm_right"], axis=1)
+# #tmp = tmp[["roll", "rpm_right"]]
+# col_names = list(tmp.columns.values)
+# tmp = data.scaler.transform(tmp) # will return a NumPy array object :heartbreak:
+# tmp = pd.DataFrame(tmp, columns=col_names) # transform back to we can graph ts
+
+# fig, axes = plt.subplots(len(col_names), 1, figsize=(13, 40))
+# for i in range(len(col_names)):
+#     axes[i].set_ylabel(col_names[i])
+#     axes[i].set_xlabel("time")
+#     axes[i].plot(times, tmp[col_names[i]])
+# plt.savefig("./tmp_StandardScaler.png")
+
+
+# In[562]:
+
+
+# for i in range(len(trainer.test_labels)):
+#     print(trainer.test_labels[i], trainer.test_errors[i])
+
+
+# In[549]:
+
+
+# print(trainer.labels_list)
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
 
 
 # In[ ]:
@@ -688,7 +917,7 @@ count_parameters(model)
 # In[30]:
 
 
-with open("./losses.txt", "w") as f:
+with open("./losses1.txt", "w") as f:
     f.write(", ".join([str(i) for i in trainer.train_losses]))
     f.write("\n")
     f.write(", ".join([str(i) for i in trainer.val_losses]))
@@ -712,28 +941,278 @@ d2l.plot(torch.arange(100), [get_lr(optimizer, scheduler)
                                   for t in range(100)])
 
 
-# In[53]:
+# In[ ]:
 
 
-t = torch.tensor([[1,2,3, 4],
-                  [7,1,9, 10],
-                  [4,5,6, 2]])
-t.max(dim=1)[0]
 
 
-# In[62]:
+
+# In[ ]:
+
+
+
+
+
+# In[57]:
+
+
+# Plot Y_hat against Y
+def plot(t, Y_hats, Ys, x_label=None, y_labels=None):
+    num_graphs = len(Y_hats)
+    for i in range(num_graphs):
+        fig, axes = plt.subplots(1, 2, figsize=(15, 5)) # 1 row, 2 cols for Y_hat vs Y
+        if y_labels is not None:
+            axes[0].set_ylabel(y_labels[i])
+            axes[1].set_ylabel(y_labels[i])
+        if x_label is not None:
+            axes[0].set_xlabel(x_label)
+            axes[1].set_xlabel(x_label)
+        axes[0].plot(t, Y_hats[i], color="blue")
+        axes[1].plot(t, Ys[i], color="orange")
+
+
+"""
+Plot X,Y_hat against Y. 
+`delay` to account for the initial time steps where only X exists (i.e., Y_hat and Y begin `delay` steps after X)
+"""
+def plot_X(t, X, Y_hats, Ys, delay=data.num_steps, x_label=None, y_labels=None):
+    num_graphs = len(Y_hats)
+    
+    for i in range(num_graphs):
+        # Pad with NaNs.
+        x_padded = torch.cat( (X[i], torch.tensor([float("NaN")]) ) )
+        y_hat_padded = torch.cat( (torch.full((delay, ), float("NaN")), Y_hats[i]) )
+        y_padded = torch.cat( (torch.full((delay, ), float("NaN")), Y[i]) )
+    
+        fig, axes = plt.subplots(figsize=(15, 5)) # 1 row, 2 cols for Y_hat vs Y
+        axes.plot(t, x_padded, color="green")
+        axes.plot(t, y_hat_padded, color="blue")
+        axes.plot(t, y_padded, color="orange")
+        if x_label is not None:
+            axes.set_xlabel(x_label)
+        if y_labels is not None:
+            axes.set_ylabel(y_labels[i])
+    plt.savefig("./tmp1.png")
+        
+
+j = 0
+X, Y_hat, Y, times = torch.tensor([]), torch.tensor([]), torch.tensor([]), torch.tensor([])
+for batch in trainer.test_dataloader:
+
+    if j >= 0 and j <= 1:
+        x,y,lab,t = batch
+        #x, y= batch
+        if len(X) == 0:
+            X = x[0].to("cpu")
+            for i in range(1, len(x)):
+                X = torch.cat((X, x[i][-1].to("cpu").unsqueeze(0)), dim=0)
+        else:
+             for i in range(0, len(x)):
+                X = torch.cat((X, x[i][-1].to("cpu").unsqueeze(0)), dim=0)
+        Y_hat = torch.cat((Y_hat, model(x.to(device)).to("cpu")), dim = 0)
+        Y = torch.cat((Y, y.to("cpu")), dim = 0)
+        #times = torch.cat((times, t.to("cpu")), dim = 0)
+        # print(Y_hat.shape)
+        # print(Y.shape)
+        # print(times.shape)
+        
+    j += 1
+
+times = torch.arange(X.shape[0] + 1)
+Y_hat = torch.transpose(Y_hat, 0, 1).detach()
+Y = torch.transpose(Y, 0, 1).detach()
+X = torch.transpose(X, 0, 1).detach()
+print("######################")
+print(times.shape)
+print(X.shape)
+print(Y_hat.shape)
+print(Y.shape)
+
+# print(Y_hat)
+# print(Y)
+print(Y_hat.shape == Y.shape)
+plot_X(times, X, Y_hat, Y, data.num_steps, "time", data.label_names)
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[816]:
+
+
+device="cpu"
+# Plot Y_hat against Y
+def plot(t, Y_hats, Ys, x_label=None, y_labels=None):
+    num_graphs = len(Y_hats)
+    for i in range(num_graphs):
+        fig, axes = plt.subplots(1, 2, figsize=(15, 5)) # 1 row, 2 cols for Y_hat vs Y
+        if y_labels is not None:
+            axes[0].set_ylabel(y_labels[i])
+            axes[1].set_ylabel(y_labels[i])
+        if x_label is not None:
+            axes[0].set_xlabel(x_label)
+            axes[1].set_xlabel(x_label)
+        axes[0].plot(t, Y_hats[i], color="blue")
+        axes[1].plot(t, Ys[i], color="orange")
+
+
+"""
+Plot X,Y_hat against Y. 
+`delay` to account for the initial time steps where only X exists (i.e., Y_hat and Y begin `delay` steps after X)
+"""
+def plot_X(t, X, Y_hats, Ys, delay=data.num_steps, x_label=None, y_labels=None):
+    num_graphs = len(Y_hats)
+    
+    for i in range(num_graphs):
+        # Pad with NaNs.
+        x_padded = torch.cat( (X[i], torch.tensor([float("NaN")]) ) )
+        y_hat_padded = torch.cat( (torch.full((delay, ), float("NaN")), Y_hats[i]) )
+        y_padded = torch.cat( (torch.full((delay, ), float("NaN")), Y[i]) )
+    
+        fig, axes = plt.subplots(figsize=(15, 5)) # 1 row, 2 cols for Y_hat vs Y
+        axes.plot(t, x_padded, color="green")
+        axes.plot(t, y_hat_padded, color="blue")
+        axes.plot(t, y_padded, color="orange")
+        if x_label is not None:
+            axes.set_xlabel(x_label)
+        if y_labels is not None:
+            axes.set_ylabel(y_labels[i])
+    plt.savefig("./tmp1.png")
+        
+
+j = 0
+X, Y_hat, Y, times = torch.tensor([]), torch.tensor([]), torch.tensor([]), torch.tensor([])
+for batch in trainer.test_dataloader:
+
+    if j >= 6 and j <= 8:
+        x,y,lab,t = batch
+        #x, y= batch
+        if len(X) == 0:
+            X = x[0].to("cpu")
+            for i in range(1, len(x)):
+                X = torch.cat((X, x[i][-1].to("cpu").unsqueeze(0)), dim=0)
+        else:
+             for i in range(0, len(x)):
+                X = torch.cat((X, x[i][-1].to("cpu").unsqueeze(0)), dim=0)
+        Y_hat = torch.cat((Y_hat, model(x.to(device)).to("cpu")), dim = 0)
+        Y = torch.cat((Y, y.to("cpu")), dim = 0)
+        #times = torch.cat((times, t.to("cpu")), dim = 0)
+        # print(Y_hat.shape)
+        # print(Y.shape)
+        # print(times.shape)
+        
+    j += 1
+
+times = torch.arange(X.shape[0] + 1)
+Y_hat = torch.transpose(Y_hat, 0, 1).detach()
+Y = torch.transpose(Y, 0, 1).detach()
+X = torch.transpose(X, 0, 1).detach()
+print("######################")
+print(times.shape)
+print(X.shape)
+print(Y_hat.shape)
+print(Y.shape)
+
+# print(Y_hat)
+# print(Y)
+print(Y_hat.shape == Y.shape)
+plot_X(times, X, Y_hat, Y, data.num_steps, "time", data.label_names)
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[ ]:
+
+
+
+
+
+# In[814]:
 
 
 p, r, t = precision_recall_curve([0, 1, 0, 1, 0, 0, 0, 1], [0.02, 0.08, 0.02, 0.09, 0.04, 0.04, 0.03, 0.07])
 
 
-# In[63]:
+# In[27]:
 
 
 p, r, t
 
 
 # In[102]:
+
+
+
+
+
+# In[25]:
+
+
+y = torch.tensor([ [[1,2], [3,4]], [[4,5], [6,7]], [[8,9], [9, 10]] ], dtype=torch.float32)
+x = torch.tensor([ [[3,4], [5,6]], [[7,8], [9,10]], [[11,12], [13, 14]] ], dtype=torch.float32)
+loss = nn.MSELoss()
+print(loss(x, y))
+loss(x,y) == (4*4+9*6+16*2)/12
+
+
+# In[752]:
+
+
+import torch
+lstm = torch.nn.LSTM(10, 20, num_layers=2, batch_first=True)
+x = torch.randn(64, 50, 10)
+out, (h_n, _) = lstm(x)
+
+print(torch.allclose(out[:, -1, :], h_n[-1])) 
+
+print(out[:, -1, :].shape)
+print(h_n[-1].shape)
+
+
+# In[ ]:
+
+
+
+
+
+# In[62]:
 
 
 
